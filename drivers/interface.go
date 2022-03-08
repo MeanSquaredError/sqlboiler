@@ -150,7 +150,7 @@ func Tables(c Constructor, schema string, whitelist, blacklist []string) ([]Tabl
 	// Relationships have a dependency on foreign key nullability.
 	for i := range tables {
 		tbl := &tables[i]
-		setForeignKeyConstraints(tbl, tables)
+		setFkConstr(tbl, tables)
 	}
 	for i := range tables {
 		tbl := &tables[i]
@@ -213,7 +213,7 @@ func views(c ViewConstructor, schema string, whitelist, blacklist []string) ([]T
 	return views, nil
 }
 
-func knownColumn(table string, column string, whitelist, blacklist []string) bool {
+func allowedFkColumn(table string, column string, whitelist, blacklist []string) bool {
 	return (len(whitelist) == 0 ||
 		strmangle.SetInclude(table, whitelist) ||
 		strmangle.SetInclude(table+"."+column, whitelist) ||
@@ -224,13 +224,22 @@ func knownColumn(table string, column string, whitelist, blacklist []string) boo
 			!strmangle.SetInclude("*."+column, blacklist)))
 }
 
+func allowedFkSide(fkSide *ForeignKeySide, whitelist, blacklist []string) bool {
+	for _, oneColumn := range fkSide.Columns {
+		if !allowedFkColumn(fkSide.Table, oneColumn, whitelist, blacklist) {
+			return false
+		}
+	}
+	return true
+}
+
 // filterForeignKeys filter FK whose ForeignTable is not in whitelist or in blacklist
 func filterForeignKeys(t *Table, whitelist, blacklist []string) {
 	var fkeys []ForeignKey
 
 	for _, fkey := range t.FKeys {
-		if knownColumn(fkey.ForeignTable, fkey.ForeignColumn, whitelist, blacklist) &&
-			knownColumn(fkey.Table, fkey.Column, whitelist, blacklist) {
+		if allowedFkSide(&fkey.Foreign, whitelist, blacklist) &&
+			allowedFkSide(&fkey.Local, whitelist, blacklist) {
 			fkeys = append(fkeys, fkey)
 		}
 	}
@@ -248,9 +257,11 @@ func setIsJoinTable(t *Table) {
 	for _, c := range t.PKey.Columns {
 		found := false
 		for _, f := range t.FKeys {
-			if c == f.Column {
-				found = true
-				break
+			for _, fkColumn := range f.Local.Columns {
+				if c == fkColumn {
+					found = true
+					break
+				}
 			}
 		}
 		if !found {
@@ -261,17 +272,28 @@ func setIsJoinTable(t *Table) {
 	t.IsJoinTable = true
 }
 
-func setForeignKeyConstraints(t *Table, tables []Table) {
+func setFkConstr(t *Table, tables []Table) {
 	for i, fkey := range t.FKeys {
-		localColumn := t.GetColumn(fkey.Column)
-		foreignTable := GetTable(tables, fkey.ForeignTable)
-		foreignColumn := foreignTable.GetColumn(fkey.ForeignColumn)
-
-		t.FKeys[i].Nullable = localColumn.Nullable
-		t.FKeys[i].Unique = localColumn.Unique
-		t.FKeys[i].ForeignColumnNullable = foreignColumn.Nullable
-		t.FKeys[i].ForeignColumnUnique = foreignColumn.Unique
+		setFkConstrSide(&t.FKeys[i].Local, t)
+		ft := GetTable(tables, fkey.Foreign.Table)
+		setFkConstrSide(&t.FKeys[i].Foreign, &ft)
 	}
+}
+
+func setFkConstrSide(s *ForeignKeySide, t *Table) {
+	nullable := false
+	unique := true
+	for _, lcName := range s.Columns {
+		lc := t.GetColumn(lcName)
+		if lc.Nullable {
+			nullable = true
+		}
+		if !lc.Unique {
+			unique = false
+		}
+	}
+	s.Nullable = nullable
+	s.Unique = unique
 }
 
 func setRelationships(t *Table, tables []Table) {

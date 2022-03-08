@@ -1,14 +1,11 @@
 {{- if or .Table.IsJoinTable .Table.IsView -}}
 {{- else -}}
 	{{- range $fkey := .Table.FKeys -}}
-		{{- $ltable := $.Aliases.Table $fkey.Table -}}
-		{{- $ftable := $.Aliases.Table $fkey.ForeignTable -}}
+		{{- $ltable := $.Aliases.Table $fkey.Local.Table -}}
+		{{- $ftable := $.Aliases.Table $fkey.Foreign.Table -}}
 		{{- $rel := $ltable.Relationship $fkey.Name -}}
 		{{- $arg := printf "maybe%s" $ltable.UpSingular -}}
-		{{- $col := $ltable.Column $fkey.Column -}}
-		{{- $fcol := $ftable.Column $fkey.ForeignColumn -}}
-		{{- $usesPrimitives := usesPrimitives $.Tables $fkey.Table $fkey.Column $fkey.ForeignTable $fkey.ForeignColumn -}}
-		{{- $schemaTable := $fkey.Table | $.SchemaTable }}
+		{{- $schemaTable := $fkey.Local.Table | $.SchemaTable }}
 {{if $.AddGlobal -}}
 // Set{{$rel.Foreign}}G of the {{$ltable.DownSingular}} to the related item.
 // Sets o.R.{{$rel.Foreign}} to related.
@@ -59,10 +56,18 @@ func (o *{{$ltable.UpSingular}}) Set{{$rel.Foreign}}({{if $.NoContext}}exec boil
 
 	updateQuery := fmt.Sprintf(
 		"UPDATE {{$schemaTable}} SET %s WHERE %s",
-		strmangle.SetParamNames("{{$.LQ}}", "{{$.RQ}}", {{if $.Dialect.UseIndexPlaceholders}}1{{else}}0{{end}}, []string{{"{"}}"{{.Column}}"{{"}"}}),
-		strmangle.WhereClause("{{$.LQ}}", "{{$.RQ}}", {{if $.Dialect.UseIndexPlaceholders}}2{{else}}0{{end}}, {{$ltable.DownSingular}}PrimaryKeyColumns),
+		strmangle.SetParamNames("{{$.LQ}}", "{{$.RQ}}", {{if $.Dialect.UseIndexPlaceholders}}1{{else}}0{{end}}, []string{{"{"}}
+			{{- range $idx, $lcol := $fkey.Local.Columns -}}
+				{{- if $idx}}, {{end -}}
+				"{{$lcol}}"
+			{{- end -}}
+		{{"}"}}),
+		strmangle.WhereClause("{{$.LQ}}", "{{$.RQ}}", {{if $.Dialect.UseIndexPlaceholders}}{{intAdd (len $fkey.Local.Columns) 1}}{{else}}0{{end}}, {{$ltable.DownSingular}}PrimaryKeyColumns),
 	)
-	values := []interface{}{related.{{$fcol}}, o.{{$.Table.PKey.Columns | stringMap (aliasCols $ltable) | join ", o."}}{{"}"}}
+	values := []interface{}{
+		{{- range $idx, $fcol := .Foreign.Columns -}}related.{{$ftable.Column $fcol}}, {{- end -}}
+		o.{{$.Table.PKey.Columns | stringMap (aliasCols $ltable) | join ", o."}}
+	{{- "}"}}
 
 	{{if $.NoContext -}}
 	if boil.DebugMode {
@@ -87,11 +92,16 @@ func (o *{{$ltable.UpSingular}}) Set{{$rel.Foreign}}({{if $.NoContext}}exec boil
 	}
 	{{- end}}
 
-	{{if $usesPrimitives -}}
-	o.{{$col}} = related.{{$fcol}}
-	{{else -}}
-	queries.Assign(&o.{{$col}}, related.{{$fcol}})
-	{{end -}}
+	{{range $idx, $lcol := $fkey.Local.Columns -}}
+		{{- $fcol := index $fkey.Foreign.Columns $idx -}}
+		{{- $lprop := $ltable.Column $lcol -}}
+		{{- $fprop := $ftable.Column $fcol -}}
+		{{- if usesPrimitives $.Tables $fkey.Local.Table $lcol $fkey.Foreign.Table $fcol -}}
+			o.{{$lprop}} = related.{{$fprop}}
+		{{- else}}
+			queries.Assign(&o.{{$lprop}}, related.{{$fprop}})
+		{{- end}}
+	{{end}}
 
 	if o.R == nil {
 		o.R = &{{$ltable.DownSingular}}R{
@@ -101,7 +111,7 @@ func (o *{{$ltable.UpSingular}}) Set{{$rel.Foreign}}({{if $.NoContext}}exec boil
 		o.R.{{$rel.Foreign}} = related
 	}
 
-	{{if .Unique -}}
+	{{if $fkey.Local.Unique -}}
 	if related.R == nil {
 		related.R = &{{$ftable.DownSingular}}R{
 			{{$rel.Local}}: o,
@@ -122,7 +132,7 @@ func (o *{{$ltable.UpSingular}}) Set{{$rel.Foreign}}({{if $.NoContext}}exec boil
 	return nil
 }
 
-		{{- if .Nullable}}
+		{{- if $fkey.Local.Nullable}}
 {{if $.AddGlobal -}}
 // Remove{{$rel.Foreign}}G relationship.
 // Sets o.R.{{$rel.Foreign}} to nil.
@@ -166,11 +176,24 @@ func (o *{{$ltable.UpSingular}}) Remove{{$rel.Foreign}}GP({{if not $.NoContext}}
 func (o *{{$ltable.UpSingular}}) Remove{{$rel.Foreign}}({{if $.NoContext}}exec boil.Executor{{else}}ctx context.Context, exec boil.ContextExecutor{{end}}, related *{{$ftable.UpSingular}}) error {
 	var err error
 
-	queries.SetScanner(&o.{{$col}}, nil)
+	{{range $lcol := $fkey.Local.Columns -}}
+	queries.SetScanner(&o.{{$ltable.Column $lcol}}, nil)
+	{{end}}
+
 	{{if $.NoContext -}}
-	if {{if not $.NoRowsAffected}}_, {{end -}} err = o.Update(exec, boil.Whitelist("{{.Column}}")); err != nil {
+	if {{if not $.NoRowsAffected}}_, {{end -}} err = o.Update(exec, boil.Whitelist(
+		{{- range $idx, $lcol := $fkey.Local.Columns -}}
+			{{- if $idx}}, {{end -}}
+			"{{$lcol}}"
+		{{- end -}}
+	)); err != nil {
 	{{else -}}
-	if {{if not $.NoRowsAffected}}_, {{end -}} err = o.Update(ctx, exec, boil.Whitelist("{{.Column}}")); err != nil {
+	if {{if not $.NoRowsAffected}}_, {{end -}} err = o.Update(ctx, exec, boil.Whitelist(
+		{{- range $idx, $lcol := $fkey.Local.Columns -}}
+			{{- if $idx}}, {{end -}}
+			"{{$lcol}}"
+		{{- end -}}
+	)); err != nil {
 	{{end -}}
 		return errors.Wrap(err, "failed to update local table")
 	}
@@ -182,24 +205,27 @@ func (o *{{$ltable.UpSingular}}) Remove{{$rel.Foreign}}({{if $.NoContext}}exec b
 		return nil
 	}
 
-	{{if .Unique -}}
+	{{if $fkey.Local.Unique -}}
 	related.R.{{$rel.Local}} = nil
 	{{else -}}
 	for i, ri := range related.R.{{$rel.Local}} {
-		{{if $usesPrimitives -}}
-		if o.{{$col}} != ri.{{$col}} {
-		{{else -}}
-		if queries.Equal(o.{{$col}}, ri.{{$col}}) {
-		{{end -}}
-			continue
+		if {{range $idx, $lcol := $fkey.Local.Columns -}}
+			{{- if $idx}} && {{end -}}
+			{{- $fcol := index $fkey.Foreign.Columns $idx -}}
+			{{- $lprop := $ltable.Column $lcol -}}
+			{{- if usesPrimitives $.Tables $fkey.Local.Table $lcol $fkey.Foreign.Table $fcol -}}
+				(o.{{$lprop}} == ri.{{$lprop}})
+			{{- else -}}
+				queries.Equal(o.{{$lprop}}, ri.{{$lprop}})
+			{{- end -}}
+		{{- end}} {
+			ln := len(related.R.{{$rel.Local}})
+			if ln > 1 && i < ln-1 {
+				related.R.{{$rel.Local}}[i] = related.R.{{$rel.Local}}[ln-1]
+			}
+			related.R.{{$rel.Local}} = related.R.{{$rel.Local}}[:ln-1]
+			break
 		}
-
-		ln := len(related.R.{{$rel.Local}})
-		if ln > 1 && i < ln-1 {
-			related.R.{{$rel.Local}}[i] = related.R.{{$rel.Local}}[ln-1]
-		}
-		related.R.{{$rel.Local}} = related.R.{{$rel.Local}}[:ln-1]
-		break
 	}
 	{{end -}}
 

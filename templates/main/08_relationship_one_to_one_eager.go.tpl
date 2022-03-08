@@ -1,12 +1,9 @@
 {{- if or .Table.IsJoinTable .Table.IsView -}}
 {{- else -}}
 	{{- range $rel := .Table.ToOneRelationships -}}
-		{{- $ltable := $.Aliases.Table $rel.Table -}}
+		{{- $ltable := $.Aliases.Table $rel.LocalTable -}}
 		{{- $ftable := $.Aliases.Table $rel.ForeignTable -}}
 		{{- $relAlias := $ftable.Relationship $rel.Name -}}
-		{{- $col := $ltable.Column $rel.Column -}}
-		{{- $fcol := $ftable.Column $rel.ForeignColumn -}}
-		{{- $usesPrimitives := usesPrimitives $.Tables $rel.Table $rel.Column $rel.ForeignTable $rel.ForeignColumn -}}
 		{{- $arg := printf "maybe%s" $ltable.UpSingular -}}
 		{{- $canSoftDelete := (getTable $.Tables $rel.ForeignTable).CanSoftDelete $.AutoColumns.Deleted }}
 // Load{{$relAlias.Local}} allows an eager lookup of values, cached into the
@@ -15,36 +12,37 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 	var slice []*{{$ltable.UpSingular}}
 	var object *{{$ltable.UpSingular}}
 
-	if singular {
-		object = {{$arg}}.(*{{$ltable.UpSingular}})
-	} else {
-		slice = *{{$arg}}.(*[]*{{$ltable.UpSingular}})
-	}
-
 	args := make([]interface{}, 0, 1)
 	if singular {
+		object = {{$arg}}.(*{{$ltable.UpSingular}})
 		if object.R == nil {
 			object.R = &{{$ltable.DownSingular}}R{}
 		}
-		args = append(args, object.{{$col}})
+		args = append(args{{- range $lcol := $rel.LocalColumns}}, object.{{$ltable.Column $lcol}}{{end}})
 	} else {
-		Outer:
+		slice = *{{$arg}}.(*[]*{{$ltable.UpSingular}})
+Outer:
 		for _, obj := range slice {
 			if obj.R == nil {
 				obj.R = &{{$ltable.DownSingular}}R{}
 			}
 
-			for _, a := range args {
-				{{if $usesPrimitives -}}
-				if a == obj.{{$col}} {
-				{{else -}}
-				if queries.Equal(a, obj.{{$col}}) {
-				{{end -}}
+			for i := 0; i < len(args); i += {{len $rel.LocalColumns}} {
+				if {{range $idx, $lcol := $rel.LocalColumns -}}
+					{{- if $idx}} && {{end -}}
+					{{- $fcol := index $rel.ForeignColumns $idx -}}
+					{{- $lprop := $ltable.Column $lcol -}}
+					{{- if usesPrimitives $.Tables $rel.LocalTable $lcol $rel.ForeignTable $fcol -}}
+						(args[i+{{$idx}}] == obj.{{$lprop}})
+					{{- else -}}
+						queries.Equal(args[i+{{$idx}}], obj.{{$lprop}})
+					{{- end -}}
+				{{- end }} {
 					continue Outer
 				}
 			}
 
-			args = append(args, obj.{{$col}})
+			args = append(args{{- range $lcol := $rel.LocalColumns}}, obj.{{$ltable.Column $lcol}}{{end}})
 		}
 	}
 

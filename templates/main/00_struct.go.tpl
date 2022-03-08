@@ -141,7 +141,7 @@ var {{$alias.UpSingular}}Rels = struct {
 // {{$alias.DownSingular}}R is where relationships are stored.
 type {{$alias.DownSingular}}R struct {
 	{{range .Table.FKeys -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 	{{- $relAlias := $alias.Relationship .Name -}}
 	{{$relAlias.Foreign}} *{{$ftable.UpSingular}} `{{generateTags $.Tags $relAlias.Foreign}}boil:"{{$relAlias.Foreign}}" json:"{{$relAlias.Foreign}}" toml:"{{$relAlias.Foreign}}" yaml:"{{$relAlias.Foreign}}"`
 	{{end -}}

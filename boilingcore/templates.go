@@ -307,14 +307,18 @@ var templateFunctions = template.FuncMap{
 	// Set operations
 	"setInclude": strmangle.SetInclude,
 
+	// Integer arithmetic ops
+	"intAdd": func(op1, op2 int) int { return op1 + op2 },
+
 	// Database related mangling
 	"whereClause": strmangle.WhereClause,
 
 	// Alias and text helping
-	"aliasCols":      func(ta TableAlias) func(string) string { return ta.Column },
-	"usesPrimitives": usesPrimitives,
-	"isPrimitive":    isPrimitive,
-	"splitLines": func(a string) []string {
+	"aliasCols":             func(ta TableAlias) func(string) string { return ta.Column },
+	"fkNonPrimitiveIndexes": fkNonPrimitiveIndexes,
+	"usesPrimitives":        usesPrimitives,
+	"isPrimitive":           isPrimitive,
+	"splitLines":            func(a string) []string {
 		if a == "" {
 			return nil
 		}

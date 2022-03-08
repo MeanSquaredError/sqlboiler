@@ -408,8 +408,6 @@ func (m *MSSQLDriver) PrimaryKeyInfo(schema, tableName string) (*drivers.Primary
 
 // ForeignKeyInfo retrieves the foreign keys for a given table name.
 func (m *MSSQLDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.ForeignKey, error) {
-	var fkeys []drivers.ForeignKey
-
 	query := `
 	SELECT ccu.constraint_name ,
 		ccu.table_name AS local_table ,
@@ -431,21 +429,38 @@ func (m *MSSQLDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.Foreig
 		return nil, err
 	}
 
+	mapping := map[string]drivers.ForeignKey{}
 	for rows.Next() {
 		var fkey drivers.ForeignKey
-		var sourceTable string
+		var localTable, localColumn, foreignColumn string
 
-		fkey.Table = tableName
-		err = rows.Scan(&fkey.Name, &sourceTable, &fkey.Column, &fkey.ForeignTable, &fkey.ForeignColumn)
+		fkey.Local.Table = tableName
+		err = rows.Scan(&fkey.Name, &localTable, &localColumn, &fkey.Foreign.Table, &foreignColumn)
 		if err != nil {
 			return nil, err
 		}
 
-		fkeys = append(fkeys, fkey)
+		if existing, ok := mapping[fkey.Name]; ok {
+			// This is a composite foreign key and so we have a local to foreign key pair to append
+			existing.Local.Columns = append(existing.Local.Columns, localColumn)
+			existing.Foreign.Columns = append(existing.Foreign.Columns, foreignColumn)
+			mapping[fkey.Name] = existing
+		} else {
+			fkey.Local.Columns = []string{localColumn}
+			fkey.Foreign.Columns = []string{foreignColumn}
+			mapping[fkey.Name] = fkey
+		}
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+
+	fkeys := make([]drivers.ForeignKey, len(mapping))
+	i := 0
+	for _, fkey := range mapping {
+		fkeys[i] = fkey
+		i++
 	}
 
 	return fkeys, nil

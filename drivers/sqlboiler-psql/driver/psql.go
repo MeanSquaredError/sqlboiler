@@ -309,7 +309,7 @@ func (p *PostgresDriver) Columns(schema, tableName string, whitelist, blacklist 
 
 		c.is_nullable = 'YES' as is_nullable,
 		(
-				case when c.is_generated = 'ALWAYS' or c.identity_generation = 'ALWAYS' 
+				case when c.is_generated = 'ALWAYS' or c.identity_generation = 'ALWAYS'
 				then TRUE else FALSE end
 		) as is_generated,
 		(case
@@ -493,52 +493,80 @@ func (p *PostgresDriver) PrimaryKeyInfo(schema, tableName string) (*drivers.Prim
 
 // ForeignKeyInfo retrieves the foreign keys for a given table name.
 func (p *PostgresDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.ForeignKey, error) {
-	var fkeys []drivers.ForeignKey
-
-	whereConditions := []string{"pgn.nspname = $2", "pgc.relname = $1", "pgcon.contype = 'f'"}
+	where := ""
 	if p.version >= 120000 {
-		whereConditions = append(whereConditions, "pgasrc.attgenerated = ''", "pgadst.attgenerated = ''")
+		where = "where attloc.attgenerated = '' and attfrn.attgenerated = ''"
 	}
-
 	query := fmt.Sprintf(`
-	select
-		pgcon.conname,
-		pgc.relname as source_table,
-		pgasrc.attname as source_column,
-		dstlookupname.relname as dest_table,
-		pgadst.attname as dest_column
-	from pg_namespace pgn
-		inner join pg_class pgc on pgn.oid = pgc.relnamespace and pgc.relkind = 'r'
-		inner join pg_constraint pgcon on pgn.oid = pgcon.connamespace and pgc.oid = pgcon.conrelid
-		inner join pg_class dstlookupname on pgcon.confrelid = dstlookupname.oid
-		inner join pg_attribute pgasrc on pgc.oid = pgasrc.attrelid and pgasrc.attnum = ANY(pgcon.conkey)
-		inner join pg_attribute pgadst on pgcon.confrelid = pgadst.attrelid and pgadst.attnum = ANY(pgcon.confkey)
-	where %s
-	order by pgcon.conname, source_table, source_column, dest_table, dest_column`,
-		strings.Join(whereConditions, " and "),
+		select
+			con.conname,
+			con.relname as local_table,
+			attloc.attname as local_column,
+			cl.relname as foreign_table,
+			attfrn.attname as foreign_column
+		from
+			(
+				select
+					unnest(con.conkey) as parent,
+					unnest(con.confkey) as child,
+					con.confrelid,
+					con.conrelid,
+					con.conname,
+					cl.relname
+				from
+					pg_class cl
+					join pg_namespace ns on cl.relnamespace = ns.oid
+					join pg_constraint con on con.conrelid = cl.oid
+				where
+					cl.relname = $1
+					and ns.nspname = $2
+					and con.contype = 'f'
+			) con
+			join pg_attribute attfrn on attfrn.attrelid = con.confrelid and attfrn.attnum = con.child
+			join pg_class cl on cl.oid = con.confrelid
+			join pg_attribute attloc on attloc.attrelid = con.conrelid and attloc.attnum = con.parent
+		%s
+		order by conname, local_table, local_column, foreign_table, foreign_column`,
+		where,
 	)
-
 	var rows *sql.Rows
 	var err error
 	if rows, err = p.conn.Query(query, tableName, schema); err != nil {
 		return nil, err
 	}
 
+	mapping := map[string]drivers.ForeignKey{}
 	for rows.Next() {
 		var fkey drivers.ForeignKey
-		var sourceTable string
+		var localTable, localColumn, foreignColumn string
 
-		fkey.Table = tableName
-		err = rows.Scan(&fkey.Name, &sourceTable, &fkey.Column, &fkey.ForeignTable, &fkey.ForeignColumn)
+		fkey.Local.Table = tableName
+		err = rows.Scan(&fkey.Name, &localTable, &localColumn, &fkey.Foreign.Table, &foreignColumn)
 		if err != nil {
 			return nil, err
 		}
 
-		fkeys = append(fkeys, fkey)
+		if existing, ok := mapping[fkey.Name]; ok {
+			// This is a composite foreign key and so we have a local to foreign key pair to append
+			existing.Local.Columns = append(existing.Local.Columns, localColumn)
+			existing.Foreign.Columns = append(existing.Foreign.Columns, foreignColumn)
+			mapping[fkey.Name] = existing
+		} else {
+			fkey.Local.Columns = []string{localColumn}
+			fkey.Foreign.Columns = []string{foreignColumn}
+			mapping[fkey.Name] = fkey
+		}
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+
+	fkeys := make([]drivers.ForeignKey, len(mapping))
+	i := 0
+	for _, fkey := range mapping {
+		fkeys[i] = fkey
+		i++
 	}
 
 	return fkeys, nil

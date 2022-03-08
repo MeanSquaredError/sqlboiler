@@ -38,17 +38,17 @@ import (
 // fk == table = industry.Industry | industry.Industry
 // fk != table = industry.ParentIndustry | industry.Industry
 func txtNameToOne(fk drivers.ForeignKey) (localFn, foreignFn string) {
-	fkColumnTrimmedSuffixes := strmangle.Singular(trimSuffixes(fk.Column))
-	fkNotTableName := fkColumnTrimmedSuffixes != strmangle.Singular(fk.ForeignTable)
-	singularForeignTable := strmangle.Singular(fk.ForeignTable)
+	fkColumnTrimmedSuffixes := colSingularTrim(fk.Local.Columns)
+	fkNotTableName := fkColumnTrimmedSuffixes != strmangle.Singular(fk.Foreign.Table)
+	singularForeignTable := strmangle.Singular(fk.Foreign.Table)
 
 	if fkColumnTrimmedSuffixes == singularForeignTable {
-		foreignFn = strmangle.TitleCase(strmangle.Singular(fk.Table) + "_" + fkColumnTrimmedSuffixes)
-		if fk.Column != singularForeignTable {
+		foreignFn = strmangle.TitleCase(strmangle.Singular(fk.Local.Table) + "_" + fkColumnTrimmedSuffixes)
+		if (len(fk.Local.Columns) != 1) || (fk.Local.Columns[0] != singularForeignTable) {
 			foreignFn = strmangle.TitleCase(fkColumnTrimmedSuffixes)
 		}
-	} else if fkColumnTrimmedSuffixes == fk.Column {
-		foreignFn = strmangle.TitleCase(fkColumnTrimmedSuffixes + "_" + strmangle.Singular(fk.ForeignTable))
+	} else if (len(fk.Local.Columns) == 1) && (fkColumnTrimmedSuffixes == fk.Local.Columns[0]) {
+		foreignFn = strmangle.TitleCase(fkColumnTrimmedSuffixes + "_" + strmangle.Singular(fk.Foreign.Table))
 	} else {
 		foreignFn = strmangle.TitleCase(fkColumnTrimmedSuffixes)
 	}
@@ -58,10 +58,10 @@ func txtNameToOne(fk drivers.ForeignKey) (localFn, foreignFn string) {
 	}
 
 	plurality := strmangle.Plural
-	if fk.Unique {
+	if fk.Local.Unique {
 		plurality = strmangle.Singular
 	}
-	localFn += strmangle.TitleCase(plurality(fk.Table))
+	localFn += strmangle.TitleCase(plurality(fk.Local.Table))
 
 	return localFn, foreignFn
 }
@@ -92,20 +92,46 @@ func txtNameToOne(fk drivers.ForeignKey) (localFn, foreignFn string) {
 // fk == table = industry.Industries
 // fk != table = industry.MappedIndustryIndustry
 func txtNameToMany(lhs, rhs drivers.ForeignKey) (lhsFn, rhsFn string) {
-	lhsKey := strmangle.Singular(trimSuffixes(lhs.Column))
-	rhsKey := strmangle.Singular(trimSuffixes(rhs.Column))
+	lhsKey := colSingularTrim(lhs.Local.Columns)
+	rhsKey := colSingularTrim(rhs.Local.Columns)
 
-	if lhsKey != strmangle.Singular(lhs.ForeignTable) {
+	if lhsKey != strmangle.Singular(lhs.Foreign.Table) {
 		lhsFn = strmangle.TitleCase(lhsKey)
 	}
-	lhsFn += strmangle.TitleCase(strmangle.Plural(lhs.ForeignTable))
+	lhsFn += strmangle.TitleCase(strmangle.Plural(lhs.Foreign.Table))
 
-	if rhsKey != strmangle.Singular(rhs.ForeignTable) {
+	if rhsKey != strmangle.Singular(rhs.Foreign.Table) {
 		rhsFn = strmangle.TitleCase(rhsKey)
 	}
-	rhsFn += strmangle.TitleCase(strmangle.Plural(rhs.ForeignTable))
+	rhsFn += strmangle.TitleCase(strmangle.Plural(rhs.Foreign.Table))
 
 	return lhsFn, rhsFn
+}
+
+// colSingularTrim gets the name for a (potentially composite) foreign key. Each column name is
+// trimmed of suffixes and singularizes, then the column names are joined with _
+func colSingularTrim(columns []string) string {
+	result := ""
+	for i, oneColumn := range columns {
+		if i != 0 {
+			result += "_"
+		}
+		result += strmangle.Singular(trimSuffixes(oneColumn))
+	}
+	return result
+}
+
+// fkNonPrimitives receives a foreign key object and returns a list of columns indexes for
+// columns that use non-primitive Go types. Non-primitive Go types cannot be compared or
+// assigned with == and = in a template.
+func fkNonPrimitiveIndexes(tables []drivers.Table, fk drivers.ForeignKey) []int {
+	indexes := make([]int, 0, 1)
+	for i := 0; i < len(fk.Local.Columns); i++ {
+		if !usesPrimitives(tables, fk.Local.Table, fk.Local.Columns[i], fk.Foreign.Table, fk.Foreign.Columns[i]) {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
 }
 
 // usesPrimitives checks to see if relationship between two models (ie the foreign key column
