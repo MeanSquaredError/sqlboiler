@@ -219,18 +219,18 @@ func (p *PostgresDriver) TableNames(schema string, whitelist, blacklist []string
 func (p *PostgresDriver) ViewNames(schema string, whitelist, blacklist []string) ([]string, error) {
 	var names []string
 
-	query := `select 
-		table_name 
+	query := `select
+		table_name
 	from (
-			select 
-				table_name, 
-				table_schema 
+			select
+				table_name,
+				table_schema
 			from information_schema.views
 			UNION
-			select 
-				matviewname as table_name, 
-				schemaname as table_schema 
-			from pg_matviews 
+			select
+				matviewname as table_name,
+				schemaname as table_schema
+			from pg_matviews
 	) as v where v.table_schema= $1`
 	args := []interface{}{schema}
 	if len(whitelist) > 0 {
@@ -275,7 +275,7 @@ func (p *PostgresDriver) ViewNames(schema string, whitelist, blacklist []string)
 func (p *PostgresDriver) ViewCapabilities(schema, name string) (drivers.ViewCapabilities, error) {
 	capabilities := drivers.ViewCapabilities{}
 
-	query := `select 
+	query := `select
 		is_insertable_into,
 		is_updatable,
 		is_trigger_insertable_into,
@@ -292,16 +292,16 @@ func (p *PostgresDriver) ViewCapabilities(schema, name string) (drivers.ViewCapa
 			is_trigger_deletable = 'YES' as is_trigger_deletable
 		from information_schema.views
 		UNION
-		select 
+		select
 			schemaname as table_schema,
-			matviewname as table_name, 
+			matviewname as table_name,
 			false as is_insertable_into,
 			false as is_updatable,
 			false as is_trigger_insertable_into,
-			false as is_trigger_updatable, 
+			false as is_trigger_updatable,
 			false as is_trigger_deletable
-		from pg_matviews 
-	) as v where v.table_schema= $1 and v.table_name = $2 
+		from pg_matviews
+	) as v where v.table_schema= $1 and v.table_name = $2
 	order by table_name;`
 
 	row := p.conn.QueryRow(query, schema, name)
@@ -409,11 +409,11 @@ func (p *PostgresDriver) Columns(schema, tableName string, whitelist, blacklist 
 			data_type
 		FROM information_schema.domains
 	)
-	SELECT 
+	SELECT
 		a.attnum as ordinal_position,
 		a.attname as column_name,
 		(
-			case 
+			case
 			when t.typtype = 'e'
 			then (
 				select 'enum.' || t.typname || '(''' || string_agg(labels.label, ''',''') || ''')'
@@ -441,18 +441,18 @@ func (p *PostgresDriver) Columns(schema, tableName string, whitelist, blacklist 
 			end
 		) as column_type,
 		(
-			case 
+			case
 			when d.is_domain
-			then d.udt_name		
+			then d.udt_name
 			when a.column_full_type LIKE '%(%)%' AND t.typcategory IN ('S', 'V')
 			then a.column_full_type
 			else t.typname
 			end
 		) as column_full_type,
 		(
-			case 
+			case
 			when d.is_domain
-			then d.udt_name		
+			then d.udt_name
 			else t.typname
 			end
 		) as udt_name,
@@ -478,7 +478,7 @@ func (p *PostgresDriver) Columns(schema, tableName string, whitelist, blacklist 
 		JOIN pg_type t ON t.oid = a.atttypid
 		LEFT JOIN cte_pg_namespace tn ON t.typnamespace = tn.oid
 		LEFT JOIN cte_information_schema_domains d ON d.domain_name = pg_catalog.format_type(a.atttypid, NULL)
-		WHERE a.attnum > 0 
+		WHERE a.attnum > 0
 		AND c.relkind = 'm'
 		AND NOT a.attisdropped
 		AND c.relname = $2
@@ -561,7 +561,7 @@ func (p *PostgresDriver) Columns(schema, tableName string, whitelist, blacklist 
 		) ct
 		where c.table_name = $2 and c.table_schema = $1`
 
-	query := fmt.Sprintf(`SELECT 
+	query := fmt.Sprintf(`SELECT
 		column_name,
 		column_type,
 		column_full_type,
@@ -703,52 +703,80 @@ func (p *PostgresDriver) PrimaryKeyInfo(schema, tableName string) (*drivers.Prim
 
 // ForeignKeyInfo retrieves the foreign keys for a given table name.
 func (p *PostgresDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.ForeignKey, error) {
-	var fkeys []drivers.ForeignKey
-
-	whereConditions := []string{"pgn.nspname = $2", "pgc.relname = $1", "pgcon.contype = 'f'"}
+	where := ""
 	if p.version >= 120000 {
-		whereConditions = append(whereConditions, "pgasrc.attgenerated = ''", "pgadst.attgenerated = ''")
+		where = "where attloc.attgenerated = '' and attfrn.attgenerated = ''"
 	}
-
 	query := fmt.Sprintf(`
-	select
-		pgcon.conname,
-		pgc.relname as source_table,
-		pgasrc.attname as source_column,
-		dstlookupname.relname as dest_table,
-		pgadst.attname as dest_column
-	from pg_namespace pgn
-		inner join pg_class pgc on pgn.oid = pgc.relnamespace and pgc.relkind = 'r'
-		inner join pg_constraint pgcon on pgn.oid = pgcon.connamespace and pgc.oid = pgcon.conrelid
-		inner join pg_class dstlookupname on pgcon.confrelid = dstlookupname.oid
-		inner join pg_attribute pgasrc on pgc.oid = pgasrc.attrelid and pgasrc.attnum = ANY(pgcon.conkey)
-		inner join pg_attribute pgadst on pgcon.confrelid = pgadst.attrelid and pgadst.attnum = ANY(pgcon.confkey)
-	where %s
-	order by pgcon.conname, source_table, source_column, dest_table, dest_column`,
-		strings.Join(whereConditions, " and "),
+		select
+			con.conname,
+			con.relname as local_table,
+			attloc.attname as local_column,
+			cl.relname as foreign_table,
+			attfrn.attname as foreign_column
+		from
+			(
+				select
+					unnest(con.conkey) as parent,
+					unnest(con.confkey) as child,
+					con.confrelid,
+					con.conrelid,
+					con.conname,
+					cl.relname
+				from
+					pg_class cl
+					join pg_namespace ns on cl.relnamespace = ns.oid
+					join pg_constraint con on con.conrelid = cl.oid
+				where
+					cl.relname = $1
+					and ns.nspname = $2
+					and con.contype = 'f'
+			) con
+			join pg_attribute attfrn on attfrn.attrelid = con.confrelid and attfrn.attnum = con.child
+			join pg_class cl on cl.oid = con.confrelid
+			join pg_attribute attloc on attloc.attrelid = con.conrelid and attloc.attnum = con.parent
+		%s
+		order by conname, local_table, local_column, foreign_table, foreign_column`,
+		where,
 	)
-
 	var rows *sql.Rows
 	var err error
 	if rows, err = p.conn.Query(query, tableName, schema); err != nil {
 		return nil, err
 	}
 
+	mapping := map[string]drivers.ForeignKey{}
 	for rows.Next() {
 		var fkey drivers.ForeignKey
-		var sourceTable string
+		var localTable, localColumn, foreignColumn string
 
-		fkey.Table = tableName
-		err = rows.Scan(&fkey.Name, &sourceTable, &fkey.Column, &fkey.ForeignTable, &fkey.ForeignColumn)
+		fkey.Local.Table = tableName
+		err = rows.Scan(&fkey.Name, &localTable, &localColumn, &fkey.Foreign.Table, &foreignColumn)
 		if err != nil {
 			return nil, err
 		}
 
-		fkeys = append(fkeys, fkey)
+		if existing, ok := mapping[fkey.Name]; ok {
+			// This is a composite foreign key and so we have a local to foreign key pair to append
+			existing.Local.Columns = append(existing.Local.Columns, localColumn)
+			existing.Foreign.Columns = append(existing.Foreign.Columns, foreignColumn)
+			mapping[fkey.Name] = existing
+		} else {
+			fkey.Local.Columns = []string{localColumn}
+			fkey.Foreign.Columns = []string{foreignColumn}
+			mapping[fkey.Name] = fkey
+		}
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+
+	fkeys := make([]drivers.ForeignKey, len(mapping))
+	i := 0
+	for _, fkey := range mapping {
+		fkeys[i] = fkey
+		i++
 	}
 
 	return fkeys, nil

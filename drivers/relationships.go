@@ -5,47 +5,34 @@ package drivers
 // local table, that column can also be unique which changes the dynamic into a
 // one-to-one style, not a to-many.
 type ToOneRelationship struct {
-	Name string `json:"name"`
+	Name    string          `json:"name"`
+	Local	ForeignKeySide	`json:"local"`
+	Foreign	ForeignKeySide	`json:"foreign"`
+}
 
-	Table    string `json:"table"`
-	Column   string `json:"column"`
-	Nullable bool   `json:"nullable"`
-	Unique   bool   `json:"unique"`
-
-	ForeignTable          string `json:"foreign_table"`
-	ForeignColumn         string `json:"foreign_column"`
-	ForeignColumnNullable bool   `json:"foreign_column_nullable"`
-	ForeignColumnUnique   bool   `json:"foreign_column_unique"`
+// JoinTableSide describes one side (local or foreign) of a join table
+type JoinTableSide struct {
+	FKeyName string   `json:"fkey_name"`
+	Columns  []string `json:"columns"`
+	Nullable bool     `json:"nullable"`	// True iff at least one column is nullable
+	Unique   bool     `json:"unique"`	// True iff all columns are unique
 }
 
 // ToManyRelationship describes a relationship between two tables where the
-// local table has no id, and the foreign table has an id that matches a column
-// in the local table.
+// local table has no id, and either:
+// 1. the foreign table has an id that matches a column in the local table.
+// 2. the foreign table has columns that matches the primary key in the local table,
+//    in the case of composite foreign keys.
 type ToManyRelationship struct {
 	Name string `json:"name"`
 
-	Table    string `json:"table"`
-	Column   string `json:"column"`
-	Nullable bool   `json:"nullable"`
-	Unique   bool   `json:"unique"`
+	Local	ForeignKeySide `json:"local"`
+	Foreign	ForeignKeySide `json:"foreign"`
 
-	ForeignTable          string `json:"foreign_table"`
-	ForeignColumn         string `json:"foreign_column"`
-	ForeignColumnNullable bool   `json:"foreign_column_nullable"`
-	ForeignColumnUnique   bool   `json:"foreign_column_unique"`
-
-	ToJoinTable bool   `json:"to_join_table"`
-	JoinTable   string `json:"join_table"`
-
-	JoinLocalFKeyName       string `json:"join_local_fkey_name"`
-	JoinLocalColumn         string `json:"join_local_column"`
-	JoinLocalColumnNullable bool   `json:"join_local_column_nullable"`
-	JoinLocalColumnUnique   bool   `json:"join_local_column_unique"`
-
-	JoinForeignFKeyName       string `json:"join_foreign_fkey_name"`
-	JoinForeignColumn         string `json:"join_foreign_column"`
-	JoinForeignColumnNullable bool   `json:"join_foreign_column_nullable"`
-	JoinForeignColumnUnique   bool   `json:"join_foreign_column_unique"`
+	ToJoinTable bool          `json:"to_join_table"`
+	JoinTable   string        `json:"join_table"`
+	JoinLocal   JoinTableSide `json:"join_local"`
+	JoinForeign JoinTableSide `json:"join_foreign"`
 }
 
 // ToOneRelationships relationship lookups
@@ -67,10 +54,9 @@ func toOneRelationships(table Table, tables []Table) []ToOneRelationship {
 
 	for _, t := range tables {
 		for _, f := range t.FKeys {
-			if f.ForeignTable == table.Name && !t.IsJoinTable && f.Unique {
+			if f.Foreign.Table == table.Name && !t.IsJoinTable && f.Local.Unique {
 				relationships = append(relationships, buildToOneRelationship(table, f, t, tables))
 			}
-
 		}
 	}
 
@@ -82,7 +68,7 @@ func toManyRelationships(table Table, tables []Table) []ToManyRelationship {
 
 	for _, t := range tables {
 		for _, f := range t.FKeys {
-			if f.ForeignTable == table.Name && (t.IsJoinTable || !f.Unique) {
+			if f.Foreign.Table == table.Name && (t.IsJoinTable || !f.Local.Unique) {
 				relationships = append(relationships, buildToManyRelationship(table, f, t, tables))
 			}
 		}
@@ -93,64 +79,77 @@ func toManyRelationships(table Table, tables []Table) []ToManyRelationship {
 
 func buildToOneRelationship(localTable Table, foreignKey ForeignKey, foreignTable Table, tables []Table) ToOneRelationship {
 	return ToOneRelationship{
-		Name:     foreignKey.Name,
-		Table:    localTable.Name,
-		Column:   foreignKey.ForeignColumn,
-		Nullable: foreignKey.ForeignColumnNullable,
-		Unique:   foreignKey.ForeignColumnUnique,
-
-		ForeignTable:          foreignTable.Name,
-		ForeignColumn:         foreignKey.Column,
-		ForeignColumnNullable: foreignKey.Nullable,
-		ForeignColumnUnique:   foreignKey.Unique,
+		Name: foreignKey.Name,
+		Local: ForeignKeySide{
+			Table:    localTable.Name,
+			Columns:  foreignKey.Foreign.Columns,
+			Nullable: foreignKey.Foreign.Nullable,
+			Unique:   foreignKey.Foreign.Unique,
+		},
+		Foreign: ForeignKeySide{
+			Table:    foreignTable.Name,
+			Columns:  foreignKey.Local.Columns,
+			Nullable: foreignKey.Local.Nullable,
+			Unique:   foreignKey.Local.Unique,
+		},
 	}
 }
 
 func buildToManyRelationship(localTable Table, foreignKey ForeignKey, foreignTable Table, tables []Table) ToManyRelationship {
 	if !foreignTable.IsJoinTable {
 		return ToManyRelationship{
-			Name:                  foreignKey.Name,
-			Table:                 localTable.Name,
-			Column:                foreignKey.ForeignColumn,
-			Nullable:              foreignKey.ForeignColumnNullable,
-			Unique:                foreignKey.ForeignColumnUnique,
-			ForeignTable:          foreignTable.Name,
-			ForeignColumn:         foreignKey.Column,
-			ForeignColumnNullable: foreignKey.Nullable,
-			ForeignColumnUnique:   foreignKey.Unique,
-			ToJoinTable:           false,
+			Name:  foreignKey.Name,
+			Local: ForeignKeySide{
+				Table:    localTable.Name,
+				Columns:  foreignKey.Foreign.Columns,
+				Nullable: foreignKey.Foreign.Nullable,
+				Unique:   foreignKey.Foreign.Unique,
+			},
+			Foreign: ForeignKeySide{
+				Table:    foreignTable.Name,
+				Columns:  foreignKey.Local.Columns,
+				Nullable: foreignKey.Local.Nullable,
+				Unique:   foreignKey.Local.Unique,
+			},
+			ToJoinTable:    false,
 		}
 	}
 
 	relationship := ToManyRelationship{
-		Table:    localTable.Name,
-		Column:   foreignKey.ForeignColumn,
-		Nullable: foreignKey.ForeignColumnNullable,
-		Unique:   foreignKey.ForeignColumnUnique,
+		Local: ForeignKeySide{
+			Table:    localTable.Name,
+			Columns:  foreignKey.Foreign.Columns,
+			Nullable: foreignKey.Foreign.Nullable,
+			Unique:   foreignKey.Foreign.Unique,
+		},
 
 		ToJoinTable: true,
 		JoinTable:   foreignTable.Name,
 
-		JoinLocalFKeyName:       foreignKey.Name,
-		JoinLocalColumn:         foreignKey.Column,
-		JoinLocalColumnNullable: foreignKey.Nullable,
-		JoinLocalColumnUnique:   foreignKey.Unique,
+		JoinLocal: JoinTableSide{
+			FKeyName: foreignKey.Name,
+			Columns:  foreignKey.Local.Columns,
+			Nullable: foreignKey.Local.Nullable,
+			Unique:   foreignKey.Local.Unique,
+		},
 	}
 
 	for _, fk := range foreignTable.FKeys {
 		if fk.Name == foreignKey.Name {
 			continue
 		}
-
-		relationship.JoinForeignFKeyName = fk.Name
-		relationship.JoinForeignColumn = fk.Column
-		relationship.JoinForeignColumnNullable = fk.Nullable
-		relationship.JoinForeignColumnUnique = fk.Unique
-
-		relationship.ForeignTable = fk.ForeignTable
-		relationship.ForeignColumn = fk.ForeignColumn
-		relationship.ForeignColumnNullable = fk.ForeignColumnNullable
-		relationship.ForeignColumnUnique = fk.ForeignColumnUnique
+		relationship.JoinForeign = JoinTableSide{
+			FKeyName: fk.Name,
+			Columns:  fk.Local.Columns,
+			Nullable: fk.Local.Nullable,
+			Unique:   fk.Local.Unique,
+		}
+		relationship.Foreign = ForeignKeySide{
+			Table:    fk.Foreign.Table,
+			Columns:  fk.Foreign.Columns,
+			Nullable: fk.Foreign.Nullable,
+			Unique:   fk.Foreign.Unique,
+		}
 	}
 
 	return relationship

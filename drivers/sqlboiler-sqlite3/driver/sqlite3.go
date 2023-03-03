@@ -451,8 +451,6 @@ func (s SQLiteDriver) PrimaryKeyInfo(schema, tableName string) (*drivers.Primary
 
 // ForeignKeyInfo retrieves the foreign keys for a given table name.
 func (s SQLiteDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.ForeignKey, error) {
-	var fkeys []drivers.ForeignKey
-
 	query := fmt.Sprintf("PRAGMA foreign_key_list('%s')", tableName)
 
 	var rows *sql.Rows
@@ -462,23 +460,41 @@ func (s SQLiteDriver) ForeignKeyInfo(schema, tableName string) ([]drivers.Foreig
 	}
 	defer rows.Close()
 
+	mapping := map[string]drivers.ForeignKey{}
 	for rows.Next() {
 		var fkey drivers.ForeignKey
-		var onu, ond, match string
+		var localColumn, foreignColumn string
 		var id, seq int
+		var onu, ond, match string
 
-		fkey.Table = tableName
-		err = rows.Scan(&id, &seq, &fkey.ForeignTable, &fkey.Column, &fkey.ForeignColumn, &onu, &ond, &match)
+		fkey.Local.Table = tableName
+		err = rows.Scan(&id, &seq, &fkey.Foreign.Table, &localColumn, &foreignColumn, &onu, &ond, &match)
 		if err != nil {
 			return nil, err
 		}
 		fkey.Name = fmt.Sprintf("FK_%d", id)
 
-		fkeys = append(fkeys, fkey)
+		if existing, ok := mapping[fkey.Name]; ok {
+			// This is a composite foreign key and so we have a local to foreign key pair to append
+			existing.Local.Columns = append(existing.Local.Columns, localColumn)
+			existing.Foreign.Columns = append(existing.Foreign.Columns, foreignColumn)
+			mapping[fkey.Name] = existing
+		} else {
+			fkey.Local.Columns = []string{localColumn}
+			fkey.Foreign.Columns = []string{foreignColumn}
+			mapping[fkey.Name] = fkey
+		}
 	}
 
 	if err = rows.Err(); err != nil {
 		return nil, err
+	}
+
+	fkeys := make([]drivers.ForeignKey, len(mapping))
+	i := 0
+	for _, fkey := range mapping {
+		fkeys[i] = fkey
+		i++
 	}
 
 	return fkeys, nil

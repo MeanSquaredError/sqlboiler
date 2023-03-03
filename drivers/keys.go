@@ -8,18 +8,19 @@ type PrimaryKey struct {
 	Columns []string `json:"columns"`
 }
 
+// ForeignKeySide represents one side of the foreign key (local or foreign)
+type ForeignKeySide struct {
+	Table   string   `json:"table"`
+	Columns []string `json:"columns"`
+	Nullable bool    `json:"nullable"`	// True iff at least one column is nullable
+	Unique   bool    `json:"unique"`	// True iff all columns are unique
+}
+
 // ForeignKey represents a foreign key constraint in a database
 type ForeignKey struct {
-	Table    string `json:"table"`
-	Name     string `json:"name"`
-	Column   string `json:"column"`
-	Nullable bool   `json:"nullable"`
-	Unique   bool   `json:"unique"`
-
-	ForeignTable          string `json:"foreign_table"`
-	ForeignColumn         string `json:"foreign_column"`
-	ForeignColumnNullable bool   `json:"foreign_column_nullable"`
-	ForeignColumnUnique   bool   `json:"foreign_column_unique"`
+	Name		string	`json:"name"`
+	Local	ForeignKeySide	`json:"local"`
+	Foreign	ForeignKeySide	`json:"foreign"`
 }
 
 // SQLColumnDef formats a column name and type like an SQL column definition.
