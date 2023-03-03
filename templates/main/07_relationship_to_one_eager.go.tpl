@@ -1,20 +1,18 @@
 {{- if or .Table.IsJoinTable .Table.IsView -}}
 {{- else -}}
 	{{- range $fkey := .Table.FKeys -}}
-		{{- $ltable := $.Aliases.Table $fkey.Table -}}
-		{{- $ftable := $.Aliases.Table $fkey.ForeignTable -}}
+		{{- $ltable := $.Aliases.Table $fkey.Local.Table -}}
+		{{- $ftable := $.Aliases.Table $fkey.Foreign.Table -}}
 		{{- $rel := $ltable.Relationship $fkey.Name -}}
 		{{- $arg := printf "maybe%s" $ltable.UpSingular -}}
-		{{- $col := $ltable.Column $fkey.Column -}}
-		{{- $fcol := $ftable.Column $fkey.ForeignColumn -}}
-		{{- $usesPrimitives := usesPrimitives $.Tables $fkey.Table $fkey.Column $fkey.ForeignTable $fkey.ForeignColumn -}}
-		{{- $canSoftDelete := (getTable $.Tables $fkey.ForeignTable).CanSoftDelete $.AutoColumns.Deleted }}
+		{{- $canSoftDelete := (getTable $.Tables $fkey.Foreign.Table).CanSoftDelete $.AutoColumns.Deleted }}
 // Load{{$rel.Foreign}} allows an eager lookup of values, cached into the
 // loaded structs of the objects. This is for an N-1 relationship.
 func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.Executor{{else}}ctx context.Context, e boil.ContextExecutor{{end}}, singular bool, {{$arg}} interface{}, mods queries.Applicator) error {
 	var slice []*{{$ltable.UpSingular}}
 	var object *{{$ltable.UpSingular}}
 
+	args := make([]interface{}, 0, 1)
 	if singular {
 		var ok bool
 		object, ok = {{$arg}}.(*{{$ltable.UpSingular}})
@@ -25,6 +23,21 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", object, {{$arg}}))
 			}
 		}
+		if object.R == nil {
+			object.R = &{{$ltable.DownSingular}}R{}
+		}
+		{{- $nonPrimitives := fkNonPrimitiveIndexes $.Tables $fkey}}
+		{{- if $nonPrimitives}}
+			if {{range $idx := $nonPrimitives -}}
+				{{- if $idx}} && {{end -}}
+				{{- $lcol := index $fkey.Local.Columns $idx -}}
+				!queries.IsNil(object.{{$ltable.Column $lcol}})
+			{{- end}} {
+				args = append(args{{- range $lcol := $fkey.Local.Columns}}, object.{{$ltable.Column $lcol}}{{end}})
+			}
+		{{- else}}
+			args = append(args{{- range $lcol := $fkey.Local.Columns}}, object.{{$ltable.Column $lcol}}{{end}})
+		{{- end}}
 	} else {
 		s, ok := {{$arg}}.(*[]*{{$ltable.UpSingular}})
 		if ok {
@@ -35,44 +48,37 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", slice, {{$arg}}))
 			}
 		}
-	}
-
-	args := make([]interface{}, 0, 1)
-	if singular {
-		if object.R == nil {
-			object.R = &{{$ltable.DownSingular}}R{}
-		}
-		{{if $usesPrimitives -}}
-		args = append(args, object.{{$col}})
-		{{else -}}
-		if !queries.IsNil(object.{{$col}}) {
-			args = append(args, object.{{$col}})
-		}
-		{{end}}
-	} else {
-		Outer:
+Outer:
 		for _, obj := range slice {
 			if obj.R == nil {
 				obj.R = &{{$ltable.DownSingular}}R{}
 			}
-
-			for _, a := range args {
-				{{if $usesPrimitives -}}
-				if a == obj.{{$col}} {
-				{{else -}}
-				if queries.Equal(a, obj.{{$col}}) {
-				{{end -}}
+			for i := 0; i < len(args); i += {{len $fkey.Local.Columns}} {
+				if {{range $idx, $lcol := $fkey.Local.Columns -}}
+					{{- if $idx}} && {{end -}}
+					{{- $fcol := index $fkey.Foreign.Columns $idx -}}
+					{{- $lprop := $ltable.Column $lcol -}}
+					{{- if usesPrimitives $.Tables $fkey.Local.Table $lcol $fkey.Foreign.Table $fcol -}}
+						(args[i+{{$idx}}] == obj.{{$lprop}})
+					{{- else -}}
+						queries.Equal(args[i+{{$idx}}], obj.{{$lprop}})
+					{{- end -}}
+				{{- end }} {
 					continue Outer
 				}
 			}
-
-			{{if $usesPrimitives -}}
-			args = append(args, obj.{{$col}})
-			{{else -}}
-			if !queries.IsNil(obj.{{$col}}) {
-				args = append(args, obj.{{$col}})
-			}
-			{{end}}
+			{{- $nonPrimitives := fkNonPrimitiveIndexes $.Tables $fkey}}
+			{{- if $nonPrimitives}}
+				if {{range $idx := $nonPrimitives -}}
+					{{- if $idx}} && {{end -}}
+					{{- $lcol := index $fkey.Local.Columns $idx -}}
+					!queries.IsNil(object.{{$ltable.Column $lcol}})
+				{{- end}} {
+					args = append(args{{- range $lcol := $fkey.Local.Columns}}, obj.{{$ltable.Column $lcol}}{{end}})
+				}
+			{{- else}}
+				args = append(args{{- range $lcol := $fkey.Local.Columns}}, obj.{{$ltable.Column $lcol}}{{end}})
+			{{- end}}
 		}
 	}
 
@@ -80,12 +86,30 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 		return nil
 	}
 
+	{{if ne (len $fkey.Foreign.Columns) 1 -}}
+	where := ""
+	for i, n := 0, len(args); i < n; i += {{len $fkey.Foreign.Columns}} {
+		if i != 0 {
+			where += " OR "
+		}
+		where += "(
+		{{- range $idx, $fcol := $fkey.Foreign.Columns -}}
+			{{- if $idx}} AND {{end -}}
+			{{- if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{$fkey.Foreign.Table}}.{{$fcol}} = ?
+		{{- end -}}
+		)"
+	}
+	{{- end}}
 	query := NewQuery(
-	    qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}`),
-	    qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{.ForeignColumn}} in ?`, args...),
-	    {{if and $.AddSoftDeletes $canSoftDelete -}}
-	    qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
-	    {{- end}}
+		qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}`),
+		{{if eq (len $fkey.Foreign.Columns) 1 -}}
+		qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{$fkey.Foreign.Table}}.{{index $fkey.Foreign.Columns 0}} in ?`, args...),
+		{{- else -}}
+		qm.Where(where, args...),
+		{{- end}}
+		{{if and $.AddSoftDeletes $canSoftDelete -}}
+		qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
+		{{- end}}
     )
 	if mods != nil {
 		mods.Apply(query)
@@ -106,10 +130,10 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 	}
 
 	if err = results.Close(); err != nil {
-		return errors.Wrap(err, "failed to close results of eager load for {{.ForeignTable}}")
+		return errors.Wrap(err, "failed to close results of eager load for {{.Foreign.Table}}")
 	}
 	if err = results.Err(); err != nil {
-		return errors.Wrap(err, "error occurred during iteration of eager loaded relations for {{.ForeignTable}}")
+		return errors.Wrap(err, "error occurred during iteration of eager loaded relations for {{.Foreign.Table}}")
 	}
 
 	{{if not $.NoHooks -}}
@@ -133,7 +157,7 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 		if foreign.R == nil {
 			foreign.R = &{{$ftable.DownSingular}}R{}
 		}
-			{{if $fkey.Unique -}}
+			{{if $fkey.Local.Unique -}}
 		foreign.R.{{$rel.Local}} = object
 			{{else -}}
 		foreign.R.{{$rel.Local}} = append(foreign.R.{{$rel.Local}}, object)
@@ -144,17 +168,23 @@ func ({{$ltable.DownSingular}}L) Load{{$rel.Foreign}}({{if $.NoContext}}e boil.E
 
 	for _, local := range slice {
 		for _, foreign := range resultSlice {
-			{{if $usesPrimitives -}}
-			if local.{{$col}} == foreign.{{$fcol}} {
-			{{else -}}
-			if queries.Equal(local.{{$col}}, foreign.{{$fcol}}) {
-			{{end -}}
+			if {{range $idx, $lcol := $fkey.Local.Columns -}}
+				{{- if $idx}} && {{end -}}
+				{{- $fcol := index $fkey.Foreign.Columns $idx -}}
+				{{- $lprop := $ltable.Column $lcol -}}
+				{{- $fprop := $ftable.Column $fcol -}}
+				{{- if usesPrimitives $.Tables $fkey.Local.Table $lcol $fkey.Foreign.Table $fcol -}}
+					local.{{$lprop}} == foreign.{{$fprop}}
+				{{- else -}}
+					queries.Equal(local.{{$lprop}}, foreign.{{$fprop}})
+				{{- end -}}
+			{{- end }} {
 				local.R.{{$rel.Foreign}} = foreign
 				{{if not $.NoBackReferencing -}}
 				if foreign.R == nil {
 					foreign.R = &{{$ftable.DownSingular}}R{}
 				}
-					{{if $fkey.Unique -}}
+					{{if $fkey.Local.Unique -}}
 				foreign.R.{{$rel.Local}} = local
 					{{else -}}
 				foreign.R.{{$rel.Local}} = append(foreign.R.{{$rel.Local}}, local)

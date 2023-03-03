@@ -1,12 +1,9 @@
 {{- if or .Table.IsJoinTable .Table.IsView -}}
 {{- else -}}
 	{{- range $rel := .Table.ToOneRelationships -}}
-		{{- $ltable := $.Aliases.Table $rel.Table -}}
-		{{- $ftable := $.Aliases.Table $rel.ForeignTable -}}
+		{{- $ltable := $.Aliases.Table $rel.Local.Table -}}
+		{{- $ftable := $.Aliases.Table $rel.Foreign.Table -}}
 		{{- $relAlias := $ftable.Relationship $rel.Name -}}
-		{{- $col := $ltable.Column $rel.Column -}}
-		{{- $fcol := $ftable.Column $rel.ForeignColumn -}}
-		{{- $usesPrimitives := usesPrimitives $.Tables $rel.Table $rel.Column $rel.ForeignTable $rel.ForeignColumn -}}
 		{{- $arg := printf "maybe%s" $ltable.UpSingular -}}
 		{{- $canSoftDelete := (getTable $.Tables $rel.ForeignTable).CanSoftDelete $.AutoColumns.Deleted }}
 // Load{{$relAlias.Local}} allows an eager lookup of values, cached into the
@@ -15,6 +12,7 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 	var slice []*{{$ltable.UpSingular}}
 	var object *{{$ltable.UpSingular}}
 
+	args := make([]interface{}, 0, 1)
 	if singular {
 		var ok bool
 		object, ok = {{$arg}}.(*{{$ltable.UpSingular}})
@@ -25,6 +23,10 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", object, {{$arg}}))
 			}
 		}
+		if object.R == nil {
+			object.R = &{{$ltable.DownSingular}}R{}
+		}
+		args = append(args{{- range $lcol := $rel.Local.Columns}}, object.{{$ltable.Column $lcol}}{{end}})
 	} else {
 		s, ok := {{$arg}}.(*[]*{{$ltable.UpSingular}})
 		if ok {
@@ -35,32 +37,28 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", slice, {{$arg}}))
 			}
 		}
-	}
-
-	args := make([]interface{}, 0, 1)
-	if singular {
-		if object.R == nil {
-			object.R = &{{$ltable.DownSingular}}R{}
-		}
-		args = append(args, object.{{$col}})
-	} else {
-		Outer:
+Outer:
 		for _, obj := range slice {
 			if obj.R == nil {
 				obj.R = &{{$ltable.DownSingular}}R{}
 			}
 
-			for _, a := range args {
-				{{if $usesPrimitives -}}
-				if a == obj.{{$col}} {
-				{{else -}}
-				if queries.Equal(a, obj.{{$col}}) {
-				{{end -}}
+			for i := 0; i < len(args); i += {{len $rel.Local.Columns}} {
+				if {{range $idx, $lcol := $rel.Local.Columns -}}
+					{{- if $idx}} && {{end -}}
+					{{- $fcol := index $rel.Foreign.Columns $idx -}}
+					{{- $lprop := $ltable.Column $lcol -}}
+					{{- if usesPrimitives $.Tables $rel.Local.Table $lcol $rel.Foreign.Table $fcol -}}
+						(args[i+{{$idx}}] == obj.{{$lprop}})
+					{{- else -}}
+						queries.Equal(args[i+{{$idx}}], obj.{{$lprop}})
+					{{- end -}}
+				{{- end }} {
 					continue Outer
 				}
 			}
 
-			args = append(args, obj.{{$col}})
+			args = append(args{{- range $lcol := $rel.Local.Columns}}, obj.{{$ltable.Column $lcol}}{{end}})
 		}
 	}
 
@@ -68,12 +66,30 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 		return nil
 	}
 
+	{{if ne (len $rel.Foreign.Columns) 1 -}}
+	where := ""
+	for i, n := 0, len(args); i < n; i += {{len $rel.Foreign.Columns}} {
+		if i != 0 {
+			where += " OR "
+		}
+		where += "(
+		{{- range $idx, $fcol := $rel.Foreign.Columns -}}
+			{{- if $idx}} AND {{end -}}
+			{{- if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{$rel.Foreign.Table}}.{{$fcol}} = ?
+		{{- end -}}
+		)"
+	}
+	{{- end}}
 	query := NewQuery(
-	    qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}`),
-        qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{.ForeignColumn}} in ?`, args...),
-	    {{if and $.AddSoftDeletes $canSoftDelete -}}
-	    qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
-	    {{- end}}
+		qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}`),
+		{{if eq (len $rel.Foreign.Columns) 1 -}}
+		qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}.{{index $rel.Foreign.Columns 0}} in ?`, args...),
+		{{- else -}}
+		qm.Where(where, args...),
+		{{- end}}
+		{{if and $.AddSoftDeletes $canSoftDelete -}}
+		qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
+		{{- end}}
     )
 	if mods != nil {
 		mods.Apply(query)
@@ -127,11 +143,17 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 
 	for _, local := range slice {
 		for _, foreign := range resultSlice {
-			{{if $usesPrimitives -}}
-			if local.{{$col}} == foreign.{{$fcol}} {
-			{{else -}}
-			if queries.Equal(local.{{$col}}, foreign.{{$fcol}}) {
-			{{end -}}
+			if {{range $idx, $lcol := $rel.Local.Columns -}}
+				{{- if $idx}} && {{end -}}
+				{{- $fcol := index $rel.Foreign.Columns $idx -}}
+				{{- $lprop := $ltable.Column $lcol -}}
+				{{- $fprop := $ftable.Column $fcol -}}
+				{{- if usesPrimitives $.Tables $rel.Local.Table $lcol $rel.Foreign.Table $fcol -}}
+					local.{{$lprop}} == foreign.{{$fprop}}
+				{{- else -}}
+					queries.Equal(local.{{$lprop}}, foreign.{{$fprop}})
+				{{- end -}}
+			{{- end }} {
 				local.R.{{$relAlias.Local}} = foreign
 				{{if not $.NoBackReferencing -}}
 				if foreign.R == nil {

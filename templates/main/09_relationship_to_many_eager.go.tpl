@@ -2,20 +2,18 @@
 {{- else -}}
 	{{- range $rel := .Table.ToManyRelationships -}}
 		{{- $ltable := $.Aliases.Table $rel.Table -}}
-		{{- $ftable := $.Aliases.Table $rel.ForeignTable -}}
-		{{- $relAlias := $.Aliases.ManyRelationship $rel.ForeignTable $rel.Name $rel.JoinTable $rel.JoinLocalFKeyName -}}
-		{{- $col := $ltable.Column $rel.Column -}}
-		{{- $fcol := $ftable.Column $rel.ForeignColumn -}}
-		{{- $usesPrimitives := usesPrimitives $.Tables $rel.Table $rel.Column $rel.ForeignTable $rel.ForeignColumn -}}
+		{{- $ftable := $.Aliases.Table $rel.Foreign.Table -}}
+		{{- $relAlias := $.Aliases.ManyRelationship $rel.Foreign.Table $rel.Name $rel.JoinTable $rel.JoinLocal.FKeyName -}}
 		{{- $arg := printf "maybe%s" $ltable.UpSingular -}}
-		{{- $schemaForeignTable := $rel.ForeignTable | $.SchemaTable -}}
-		{{- $canSoftDelete := (getTable $.Tables $rel.ForeignTable).CanSoftDelete $.AutoColumns.Deleted }}
+		{{- $schemaForeignTable := $rel.Foreign.Table | $.SchemaTable -}}
+		{{- $canSoftDelete := (getTable $.Tables $rel.Foreign.Table).CanSoftDelete $.AutoColumns.Deleted }}
 // Load{{$relAlias.Local}} allows an eager lookup of values, cached into the
 // loaded structs of the objects. This is for a 1-M or N-M relationship.
 func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boil.Executor{{else}}ctx context.Context, e boil.ContextExecutor{{end}}, singular bool, {{$arg}} interface{}, mods queries.Applicator) error {
 	var slice []*{{$ltable.UpSingular}}
 	var object *{{$ltable.UpSingular}}
 
+	args := make([]interface{}, 0, 1)
 	if singular {
 		var ok bool
 		object, ok = {{$arg}}.(*{{$ltable.UpSingular}})
@@ -26,6 +24,10 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", object, {{$arg}}))
 			}
 		}
+		if object.R == nil {
+			object.R = &{{$ltable.DownSingular}}R{}
+		}
+		args = append(args{{- range $lcol := $rel.Local.Columns}}, object.{{$ltable.Column $lcol}}{{end}})
 	} else {
 		s, ok := {{$arg}}.(*[]*{{$ltable.UpSingular}})
 		if ok {
@@ -36,32 +38,28 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 				return errors.New(fmt.Sprintf("failed to set %T from embedded struct %T", slice, {{$arg}}))
 			}
 		}
-	}
-
-	args := make([]interface{}, 0, 1)
-	if singular {
-		if object.R == nil {
-			object.R = &{{$ltable.DownSingular}}R{}
-		}
-		args = append(args, object.{{$col}})
-	} else {
-		Outer:
+Outer:
 		for _, obj := range slice {
 			if obj.R == nil {
 				obj.R = &{{$ltable.DownSingular}}R{}
 			}
 
-			for _, a := range args {
-				{{if $usesPrimitives -}}
-				if a == obj.{{$col}} {
-				{{else -}}
-				if queries.Equal(a, obj.{{$col}}) {
-				{{end -}}
+			for i := 0; i < len(args); i += {{len $rel.Local.Columns}} {
+				if {{range $idx, $lcol := $rel.Local.Columns -}}
+					{{- if $idx}} && {{end -}}
+					{{- $fcol := index $rel.Foreign.Columns $idx -}}
+					{{- $lprop := $ltable.Column $lcol -}}
+					{{- if usesPrimitives $.Tables $rel.Local.Table $lcol $rel.Foreign.Table $fcol -}}
+						(args[i+{{$idx}}] == obj.{{$lprop}})
+					{{- else -}}
+						queries.Equal(args[i+{{$idx}}], obj.{{$lprop}})
+					{{- end -}}
+				{{- end }} {
 					continue Outer
 				}
 			}
 
-			args = append(args, obj.{{$col}})
+			args = append(args{{- range $lcol := $rel.Local.Columns}}, obj.{{$ltable.Column $lcol}}{{end}})
 		}
 	}
 
@@ -69,24 +67,66 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 		return nil
 	}
 
-		{{if .ToJoinTable -}}
-			{{- $schemaJoinTable := .JoinTable | $.SchemaTable -}}
-			{{- $foreignTable := getTable $.Tables .ForeignTable -}}
+	{{if .ToJoinTable -}}
+		{{- $schemaJoinTable := .JoinTable | $.SchemaTable -}}
+		{{- $foreignTable := getTable $.Tables .Foreign.Table -}}
+	{{if ne (len $rel.JoinLocal.Columns) 1 -}}
+	where := ""
+	for i, n := 0, len(args); i < n; i += {{len $rel.JoinLocal.Columns}} {
+		if i != 0 {
+			where += " OR "
+		}
+		where += "(
+		{{- range $idx, $jlcol := $rel.JoinLocal.Columns -}}
+			{{- if $idx}} AND {{end -}}
+			{{id 0 | $.Quotes}}.{{$jlcol | $.Quotes}} = ?
+		{{- end -}}
+		)"
+	}
+	{{- end}}
 	query := NewQuery(
-		qm.Select("{{$foreignTable.Columns | columnNames | $.QuoteMap | prefixStringSlice (print $schemaForeignTable ".") | join ", "}}, {{id 0 | $.Quotes}}.{{.JoinLocalColumn | $.Quotes}}"),
+		qm.Select("
+			{{- $foreignTable.Columns | columnNames | $.QuoteMap | prefixStringSlice (print $schemaForeignTable ".") | join ", " -}},
+			{{- .JoinLocal.Columns | $.QuoteMap | prefixStringSlice (print (id 0 | $.Quotes) ".") | join ", " -}},
+		"),
 		qm.From("{{$schemaForeignTable}}"),
-		qm.InnerJoin("{{$schemaJoinTable}} as {{id 0 | $.Quotes}} on {{$schemaForeignTable}}.{{.ForeignColumn | $.Quotes}} = {{id 0 | $.Quotes}}.{{.JoinForeignColumn | $.Quotes}}"),
+		qm.InnerJoin("{{$schemaJoinTable}} as {{id 0 | $.Quotes}} on {{range $idx, $fcol := $rel.Foreign.Columns -}}
+			{{- if $idx}} AND {{end -}}
+			{{$schemaForeignTable}}.{{$fcol | $.Quotes}} = {{id 0 | $.Quotes}}.{{index $rel.JoinForeign.Columns $idx | $.Quotes}}
+		{{- end -}}"),
+		{{if eq (len $rel.Foreign.Columns) 1 -}}
 		qm.WhereIn("{{id 0 | $.Quotes}}.{{.JoinLocalColumn | $.Quotes}} in ?", args...),
+		{{- else -}}
+		qm.Where(where, args...),
+		{{- end}}
 		{{if and $.AddSoftDeletes $canSoftDelete -}}
 		qmhelper.WhereIsNull("{{$schemaForeignTable}}.{{or $.AutoColumns.Deleted "deleted_at" | $.Quotes}}"),
 		{{- end}}
 	)
 		{{else -}}
+	{{if ne (len $rel.Foreign.Columns) 1 -}}
+	where := ""
+	for i, n := 0, len(args); i < n; i += {{len $rel.Foreign.Columns}} {
+		if i != 0 {
+			where += " OR "
+		}
+		where += "(
+		{{- range $idx, $fcol := $rel.Foreign.Columns -}}
+			{{- if $idx}} AND {{end -}}
+			{{- if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{$rel.Foreign.Table}}.{{$fcol}} = ?
+		{{- end -}}
+		)"
+	}
+	{{- end}}
 	query := NewQuery(
-	    qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}`),
-	    qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{.ForeignColumn}} in ?`, args...),
+	    qm.From(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}`),
+		{{if eq (len $rel.Foreign.Columns) 1 -}}
+		qm.WhereIn(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}.{{index $rel.Foreign.Columns 0}} in ?`, args...),
+		{{- else -}}
+		qm.Where(where, args...),
+		{{- end}}
 	    {{if and $.AddSoftDeletes $canSoftDelete -}}
-	    qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.ForeignTable}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
+	    qmhelper.WhereIsNull(`{{if $.Dialect.UseSchema}}{{$.Schema}}.{{end}}{{.Foreign.Table}}.{{or $.AutoColumns.Deleted "deleted_at"}}`),
 	    {{- end}}
     )
 		{{end -}}
@@ -100,12 +140,12 @@ func ({{$ltable.DownSingular}}L) Load{{$relAlias.Local}}({{if $.NoContext}}e boi
 	results, err := query.QueryContext(ctx, e)
 	{{end -}}
 	if err != nil {
-		return errors.Wrap(err, "failed to eager load {{.ForeignTable}}")
+		return errors.Wrap(err, "failed to eager load {{.Foreign.Table}}")
 	}
 
 	var resultSlice []*{{$ftable.UpSingular}}
 	{{if .ToJoinTable -}}
-	{{- $foreignTable := getTable $.Tables .ForeignTable -}}
+	{{- $foreignTable := getTable $.Tables .Foreign.Table -}}
 	{{- $joinTable := getTable $.Tables .JoinTable -}}
 	{{- $localCol := $joinTable.GetColumn .JoinLocalColumn}}
 	var localJoinCols []{{$localCol.Type}}

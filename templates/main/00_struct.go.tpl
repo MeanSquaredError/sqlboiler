@@ -111,13 +111,13 @@ var {{$alias.UpSingular}}Rels = struct {
 	{{end -}}
 
 	{{range .Table.ToOneRelationships -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 	{{- $relAlias := $ftable.Relationship .Name -}}
 	{{$relAlias.Local}} string
 	{{end -}}
 
 	{{range .Table.ToManyRelationships -}}
-	{{- $relAlias := $.Aliases.ManyRelationship .ForeignTable .Name .JoinTable .JoinLocalFKeyName -}}
+	{{- $relAlias := $.Aliases.ManyRelationship .Foreign.Table .Name .JoinTable .JoinLocal.FKeyName -}}
 	{{$relAlias.Local}} string
 	{{end -}}{{/* range tomany */}}
 }{
@@ -127,13 +127,13 @@ var {{$alias.UpSingular}}Rels = struct {
 	{{end -}}
 
 	{{range .Table.ToOneRelationships -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 	{{- $relAlias := $ftable.Relationship .Name -}}
 	{{$relAlias.Local}}: "{{$relAlias.Local}}",
 	{{end -}}
 
 	{{range .Table.ToManyRelationships -}}
-	{{- $relAlias := $.Aliases.ManyRelationship .ForeignTable .Name .JoinTable .JoinLocalFKeyName -}}
+	{{- $relAlias := $.Aliases.ManyRelationship .Foreign.Table .Name .JoinTable .JoinLocal.FKeyName -}}
 	{{$relAlias.Local}}: "{{$relAlias.Local}}",
 	{{end -}}{{/* range tomany */}}
 }
@@ -141,20 +141,20 @@ var {{$alias.UpSingular}}Rels = struct {
 // {{$alias.DownSingular}}R is where relationships are stored.
 type {{$alias.DownSingular}}R struct {
 	{{range .Table.FKeys -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 	{{- $relAlias := $alias.Relationship .Name -}}
 	{{$relAlias.Foreign}} *{{$ftable.UpSingular}} `{{generateTags $.Tags $relAlias.Foreign}}boil:"{{$relAlias.Foreign}}" json:"{{$relAlias.Foreign}}" toml:"{{$relAlias.Foreign}}" yaml:"{{$relAlias.Foreign}}"`
 	{{end -}}
 
 	{{range .Table.ToOneRelationships -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 	{{- $relAlias := $ftable.Relationship .Name -}}
 	{{$relAlias.Local}} *{{$ftable.UpSingular}} `{{generateTags $.Tags $relAlias.Local}}boil:"{{$relAlias.Local}}" json:"{{$relAlias.Local}}" toml:"{{$relAlias.Local}}" yaml:"{{$relAlias.Local}}"`
 	{{end -}}
 
 	{{range .Table.ToManyRelationships -}}
-	{{- $ftable := $.Aliases.Table .ForeignTable -}}
-	{{- $relAlias := $.Aliases.ManyRelationship .ForeignTable .Name .JoinTable .JoinLocalFKeyName -}}
+	{{- $ftable := $.Aliases.Table .Foreign.Table -}}
+	{{- $relAlias := $.Aliases.ManyRelationship .Foreign.Table .Name .JoinTable .JoinLocal.FKeyName -}}
 	{{$relAlias.Local}} {{printf "%sSlice" $ftable.UpSingular}} `{{generateTags $.Tags $relAlias.Local}}boil:"{{$relAlias.Local}}" json:"{{$relAlias.Local}}" toml:"{{$relAlias.Local}}" yaml:"{{$relAlias.Local}}"`
 	{{end -}}{{/* range tomany */}}
 }
@@ -165,7 +165,7 @@ func (*{{$alias.DownSingular}}R) NewStruct() *{{$alias.DownSingular}}R {
 }
 
 {{range .Table.FKeys -}}
-{{- $ftable := $.Aliases.Table .ForeignTable -}}
+{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 {{- $relAlias := $alias.Relationship .Name -}}
 func (r *{{$alias.DownSingular}}R) Get{{$relAlias.Foreign}}() *{{$ftable.UpSingular}} {
 	if (r == nil) {
@@ -177,7 +177,7 @@ func (r *{{$alias.DownSingular}}R) Get{{$relAlias.Foreign}}() *{{$ftable.UpSingu
 {{end -}}
 
 {{- range .Table.ToOneRelationships -}}
-{{- $ftable := $.Aliases.Table .ForeignTable -}}
+{{- $ftable := $.Aliases.Table .Foreign.Table -}}
 {{- $relAlias := $ftable.Relationship .Name -}}
 func (r *{{$alias.DownSingular}}R) Get{{$relAlias.Local}}() *{{$ftable.UpSingular}} {
 	if (r == nil) {
@@ -189,8 +189,8 @@ func (r *{{$alias.DownSingular}}R) Get{{$relAlias.Local}}() *{{$ftable.UpSingula
 {{end -}}
 
 {{- range .Table.ToManyRelationships -}}
-{{- $ftable := $.Aliases.Table .ForeignTable -}}
-{{- $relAlias := $.Aliases.ManyRelationship .ForeignTable .Name .JoinTable .JoinLocalFKeyName -}}
+{{- $ftable := $.Aliases.Table .Foreign.Table -}}
+{{- $relAlias := $.Aliases.ManyRelationship .Foreign.Table .Name .JoinTable .JoinLocal.FKeyName -}}
 func (r *{{$alias.DownSingular}}R) Get{{$relAlias.Local}}() {{printf "%sSlice" $ftable.UpSingular}} {
 	if (r == nil) {
     return nil
