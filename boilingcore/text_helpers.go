@@ -121,6 +121,19 @@ func colSingularTrim(columns []string) string {
 	return result
 }
 
+// fkNonPrimitiveIndexes receives a foreign key object and returns a list of columns indexes for
+// columns that use non-primitive Go types. Non-primitive Go types cannot be compared or
+// assigned with == and = in a template.
+func fkNonPrimitiveIndexes(tables []drivers.Table, fk drivers.ForeignKey) []int {
+	indexes := make([]int, 0, 1)
+	for i := 0; i < len(fk.Local.Columns); i++ {
+		if !usesPrimitives(tables, fk.Local.Table, fk.Local.Columns[i], fk.Foreign.Table, fk.Foreign.Columns[i]) {
+			indexes = append(indexes, i)
+		}
+	}
+	return indexes
+}
+
 // usesPrimitives checks to see if relationship between two models (ie the foreign key column
 // and referred to column) both are primitive Go types we can compare or assign with == and =
 // in a template.
