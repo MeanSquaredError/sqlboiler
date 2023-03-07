@@ -2,6 +2,7 @@
 /sqlboiler-psql
 /sqlboiler-mysql
 /sqlboiler-mssql
+/sqlboiler-sqlite3
 /cmd/sqlboiler/sqlboiler
 sqlboiler.toml
 models/

@@ -21,7 +21,7 @@ build() {
             set -o xtrace
             go build "${buildPath}"
             { set +o xtrace; } 2>/dev/null
-            drivers="psql mysql mssql"
+            drivers="psql mysql mssql sqlite3"
             shift ;;
         psql)
             drivers="psql"
@@ -31,6 +31,9 @@ build() {
             shift ;;
         mssql)
             drivers="mssql"
+            shift ;;
+        sqlite3)
+            drivers="sqlite3"
             shift ;;
         *)
             set -o xtrace
